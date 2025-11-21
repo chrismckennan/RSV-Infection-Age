@@ -1,0 +1,71 @@
+---
+title: "Simulate and analyze data"
+author: "Chris McKennan"
+date: "2025-10-14"
+output: html_document
+---
+
+# Load data and source functions
+```{r LoadData}
+tmp <- load("SimulationParams.RData")
+
+source("SimulateData.R")
+source("EstimateModelParams2.R")
+source("Prediction2.R")
+```
+
+# Set parameters
+Parameters chosen to match INSPIRE discovery data
+```{r SetParameters}
+min.dob <- as.Date("2012-06-01")
+max.dob <- as.Date("2013-12-31")
+n <- 1713
+n.miss <- 579
+```
+
+# Simulate data
+```{r SimulateData}
+#Simulate birth dates#
+DOB.sim <- as.Date("2012-06-01") + runif(n = floor(n/2), min = 0, max = as.numeric(as.Date("2012-12-31")-as.Date("2012-06-01")))
+DOB.sim <- c(DOB.sim, as.Date("2013-06-01") + runif(n = n-length(DOB.sim), min = 0, max = as.numeric(as.Date("2013-12-31")-as.Date("2013-06-01"))))
+DOB.sim <- sort(as.Date(DOB.sim))
+
+#Generate Covariates#
+Cov.sim <- Cov.sim[order(runif(n)),]
+
+#Compute probabilities#
+Prob.sim <- PredictCondDensity(Lambda = Lambda, DOB = DOB.sim, a.max = 365, knots = Knots, degree = 3, Alpha = W.params.true, Cov = Cov.sim, Beta = beta.true, Mu = rep(0,length(beta.true)), Month.use = 1:12, Cond.Prob = F)
+
+#Simulate data#
+Sim.Data <- SimulateData(DOB = DOB.sim, P.RSV = Prob.sim$Prob, n.miss = n.miss)
+Sim.Data$Date.RSV <- Sim.Data$DOB + Sim.Data$Age.RSV
+```
+
+# Estimate parameters
+```{r EstimateParameters}
+#Create dataset#
+Dataset.Sim <- Get.Data(degree = 3, n.internal.knots = 10, Lambda = Lambda, Date.RSV = Sim.Data$Date.RSV, RSV.status = Sim.Data$RSV.1year, DOB = Sim.Data$DOB, Cov = Cov.sim)
+Dataset.True <- Get.Data(degree = 3, n.internal.knots = 10, Lambda = Lambda, Date.RSV = Sim.Data$Date.RSV, RSV.status = Sim.Data$RSV.1year, DOB = Sim.Data$DOB, Cov = Cov.sim, knots = Knots)  #Used to plot the ground-truth weight function.
+
+#Estimate parameters#
+Lambda.Kfold.Sim <- Choose.Lambda(Data = Dataset.Sim, n.folds = 10, n.lambda = 400, max.lambda=1e3)
+Fit.Sim <- Optimize.W.Cov(Data = Dataset.Sim, lambda = nrow(Dataset.Sim$Cov)*Lambda.Kfold.Sim$lambda.opt, max.iter = 200); names(Fit.Sim$beta) <- c("White","Male","Daycare","OlderSiblings")
+```
+
+# Plot results
+Solid black line: estimate\\
+Dashed lines: 95% confidence intervals\\
+Red line: simulated ground-truth weight function\\
+Note: the dashed lines are point-wise confidence intervals, not confidence bands. Therefore, the red line is not expected to lie within the dashed lines at every point. 
+```{r Plot}
+alpha.plot <- 0.05
+Se.fit.Sim <- Var.Pred.Cov(Alpha = Fit.Sim$Alpha, Beta = Fit.Sim$beta, Data = Dataset.Sim, lambda = nrow(Dataset.Sim$Cov)*Lambda.Kfold.Sim$lambda.opt, units = "months", plot.it = F)
+Se.fit.Sim.True <- Var.Pred.Cov(Alpha = W.params.true, Beta = beta.true, Data = Dataset.True, lambda = nrow(Dataset.Sim$Cov)*Lambda.Kfold.Sim$lambda.opt, units = "months", plot.it = F)
+
+plot(Se.fit.Sim$x.plot, Se.fit.Sim$W.hat, type = "l", lwd=2, xlab="", xlim=c(0,365/30), ylim=c(0,max(c(Se.fit.Sim$W.hat+qnorm(1-alpha.plot/2)*Se.fit.Sim$se.W.hat,Se.fit.Sim.True$W.hat))), ylab="", axes=F)
+lines(Se.fit.Sim$x.plot, Se.fit.Sim$W.hat - qnorm(1-alpha.plot/2)*Se.fit.Sim$se.W.hat, lty=2); lines(Se.fit.Sim$x.plot, Se.fit.Sim$W.hat + qnorm(1-alpha.plot/2)*Se.fit.Sim$se.W.hat, lty=2)
+axis(side = 1, at = seq(0,365/30,length=13), labels = 0:12); axis(side = 2, at = pretty(c(Se.fit.Sim$W.hat,Se.fit.Sim$W.hat - qnorm(1-alpha.plot/2)*Se.fit.Sim$se.W.hat,Se.fit.Sim$W.hat + qnorm(1-alpha.plot/2)*Se.fit.Sim$se.W.hat)))
+title(xlab = expression(paste("Age ",italic(a)," (months)")), ylab = expression(paste("Weight function estimate ",hat(italic(w)),"(",italic(a),")")), line = 2.3)
+
+lines(Se.fit.Sim.True$x.plot, Se.fit.Sim.True$W.hat, col="red")
+```
